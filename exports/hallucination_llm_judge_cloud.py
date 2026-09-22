@@ -5,10 +5,11 @@ For each CSV in this folder:
      by the existing `hallucination_label` column so the subset's 0/1 split
      mirrors the full dataset's hallucination rate (e.g. a dataset that's
      70% hallucinated yields a subset that's ~70% hallucinated too).
-  2. For each sampled row, ask an LLM (via LM Studio's native REST API)
-     to compare `generated_response` against the `gold` answers and output
-     a single character: 1 = hallucination, 0 = not a hallucination.
-  3. Write these judgments into a new `small_llm` column
+  2. For each sampled row, ask an LLM (via Novita AI's OpenAI-compatible
+     chat completions API) to compare `generated_response` against the
+     `gold` answers and output a single character: 1 = hallucination,
+     0 = not a hallucination.
+  3. Write these judgments into a new `large_llm` column
      (blank for rows that were not sampled).
   4. Compute, per CSV:
        - hallucination rate over the FULL dataset using the existing
@@ -18,8 +19,13 @@ For each CSV in this folder:
        - hallucination rate over the SUBSET using the new LLM judgments
      and write a summary report to a .txt file.
 
+This is the cloud-LLM counterpart to hallucination_llm_judge.py (which
+judges via a local/small LLM through LM Studio and writes `small_llm`).
+Both scripts can be run against the same CSVs - each only ever touches
+its own column, so the two judgments live side by side.
+
 Usage:
-    python3 hallucination_llm_judge.py
+    python3 hallucination_llm_judge_cloud.py
 """
 
 import ast
@@ -31,29 +37,29 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.request
-import json
 
+from openai import OpenAI
 from tqdm import tqdm
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
 
-SUBSET_PERCENTAGE = 1.0           # fraction of each dataset to sample (0.0-1.0)
+SUBSET_PERCENTAGE = 0.1          # fraction of each dataset to sample (0.0-1.0)
 RANDOM_SEED = 42                  # fixed seed -> reproducible subset across runs
 
-# LM Studio's native REST API (used via "LM Link", which tunnels this local
-# port through to the model actually loaded on another machine). Not the
-# OpenAI-compatible /v1/chat/completions route - this one takes
-# {model, system_prompt, input} and returns {"output": [{"content": ...}]}.
-LM_STUDIO_URL = "http://127.0.0.1:1234/api/v1/chat"
-MODEL_NAME = "qwen/qwen3.6-27b"
+# Novita AI's OpenAI-compatible chat completions API, via the official
+# openai SDK (pip install openai) pointed at Novita's base_url.
+NOVITA_BASE_URL = "https://api.novita.ai/openai"
+MODEL_NAME = "deepseek/deepseek-v4-pro"
+NOVITA_API_KEY = "sk_A2vhbspxw6zvw4jzIaI2Dx4xJyBzfY1R8Uo57A1Dos0"
 
-NEW_COLUMN = "small_llm"
+_client = OpenAI(api_key=NOVITA_API_KEY, base_url=NOVITA_BASE_URL)
+
+NEW_COLUMN = "large_llm"
 
 EXPORTS_DIR = os.path.dirname(os.path.abspath(__file__))
-REPORT_PATH = os.path.join(EXPORTS_DIR, "hallucination_rate_report.txt")
+REPORT_PATH = os.path.join(EXPORTS_DIR, "hallucination_rate_report_cloud.txt")
 REPO_DIR = os.path.dirname(EXPORTS_DIR)
 
 # Every sampled subset row is also written here, one CSV per source file,
@@ -64,14 +70,14 @@ SUBSETS_DIR = os.path.join(EXPORTS_DIR, "subsets")
 
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 2
-# With "thinking" disabled a judge call normally takes ~2-3s. This is kept
-# generous enough to absorb normal slowdowns (long prompts, occasional
-# reasoning) without letting one stalled request stall the whole run for
-# minutes; a hard per-attempt wall-clock cap is enforced in query_llm.
+# Cloud API calls have more latency/queueing variance than a local model, so
+# this is kept generous enough to absorb normal slowdowns without letting one
+# stalled request stall the whole run for minutes; a hard per-attempt
+# wall-clock cap is enforced in query_llm.
 REQUEST_TIMEOUT = 30
 
 # Save progress back to the CSV after this many newly-judged rows, so an
-# interrupted run (Ctrl-C, crash, LM Studio restart) loses at most this many
+# interrupted run (Ctrl-C, crash, network hiccup) loses at most this many
 # judgments. Re-running the script afterwards resumes: any row that already
 # has a value in NEW_COLUMN is left as-is and not re-queried.
 CHECKPOINT_EVERY = 20
@@ -154,42 +160,38 @@ def build_user_input(generated_response, gold_answers):
     )
 
 
-def _do_request(payload_bytes, result_box):
+def _do_request(messages, result_box):
     """Runs in a worker thread so the caller can enforce a hard wall-clock
-    deadline: urllib's own `timeout=` only bounds individual socket ops, and
-    in practice a request can stall past it without ever raising (observed
-    in testing against LM Studio), leaving the whole script hung."""
-    req = urllib.request.Request(
-        LM_STUDIO_URL,
-        data=payload_bytes,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
+    deadline: the SDK's own `timeout=` only bounds individual socket ops, and
+    in practice a request can stall past it without ever raising, leaving
+    the whole script hung."""
     try:
-        with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as resp:
-            result_box["body"] = json.loads(resp.read().decode("utf-8"))
+        result_box["response"] = _client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=messages,
+            temperature=0,
+            max_tokens=100,
+            extra_body={"enable_thinking": False},
+        )
     except Exception as e:  # noqa: BLE001 - surfaced to the caller below
         result_box["error"] = e
 
 
 def query_llm(generated_response, gold_answers):
-    payload = {
-        "model": MODEL_NAME,
-        "system_prompt": SYSTEM_PROMPT,
-        "input": build_user_input(generated_response, gold_answers),
-        "temperature": 0,
-    }
-    payload_bytes = json.dumps(payload).encode("utf-8")
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": build_user_input(generated_response, gold_answers)},
+    ]
 
     last_err = None
     for attempt in range(1, MAX_RETRIES + 1):
         result_box = {}
-        worker = threading.Thread(target=_do_request, args=(payload_bytes, result_box), daemon=True)
+        worker = threading.Thread(target=_do_request, args=(messages, result_box), daemon=True)
         worker.start()
         worker.join(timeout=REQUEST_TIMEOUT)
 
         if worker.is_alive():
-            # Hard-hung request: urllib didn't raise on its own timeout.
+            # Hard-hung request: the SDK didn't raise on its own timeout.
             # We can't kill the thread, but we stop waiting on it (it's a
             # daemon thread, so it won't block process exit) and move on.
             last_err = f"request hard-hung past {REQUEST_TIMEOUT}s"
@@ -197,20 +199,12 @@ def query_llm(generated_response, gold_answers):
             last_err = str(result_box["error"])
         else:
             try:
-                body = result_box["body"]
-                if "error" in body:
-                    last_err = f"API error: {body['error'].get('message', body['error'])}"
-                else:
-                    output_items = body.get("output", [])
-                    content = ""
-                    for item in output_items:
-                        if item.get("type") == "message":
-                            content = (item.get("content") or "").strip()
-                            break
-                    label = extract_binary_label(content)
-                    if label is not None:
-                        return label
-                    last_err = f"unparseable response: content={content!r}"
+                response = result_box["response"]
+                content = (response.choices[0].message.content or "").strip()
+                label = extract_binary_label(content)
+                if label is not None:
+                    return label
+                last_err = f"unparseable response: content={content!r}"
             except (KeyError, IndexError, AttributeError) as e:
                 last_err = str(e)
 
@@ -346,7 +340,7 @@ def render_report(results):
     lines = []
     lines.append("Hallucination Rate Report")
     lines.append(f"Subset percentage: {SUBSET_PERCENTAGE:.0%}  |  Random seed: {RANDOM_SEED}")
-    lines.append(f"Judge model: {MODEL_NAME} ({LM_STUDIO_URL})")
+    lines.append(f"Judge model: {MODEL_NAME} ({NOVITA_BASE_URL})")
     lines.append("=" * 70)
 
     for r in results:
