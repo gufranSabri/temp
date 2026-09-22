@@ -50,3 +50,51 @@ triviaqa_llama3.1_8b.csv
   Full-dataset hallucination rate (existing): 0.4131 (41.31%)
   Subset hallucination rate (existing)      : 0.4131 (41.31%)
   Subset hallucination rate (LLM judged)     : 0.3128 (31.28%)
+
+triviaqa_opt_6.7b.csv
+---------------------
+  Total rows                              : 9960
+  Subset size                              : 9960
+  Full-dataset hallucination rate (existing): 0.6854 (68.54%)
+  Subset hallucination rate (existing)      : 0.6854 (68.54%)
+  Subset hallucination rate (LLM judged)     : 0.6680 (66.80%)
+
+triviaqa_qwen2.5_7b.csv
+-----------------------
+  Total rows                              : 9960
+  Subset size                              : 9960
+  Full-dataset hallucination rate (existing): 0.4352 (43.52%)
+  Subset hallucination rate (existing)      : 0.4352 (43.52%)
+  Subset hallucination rate (LLM judged)     : 0.4025 (40.25%)
+
+truthfulqa_llama2_7b.csv
+------------------------
+  Total rows                              : 817
+  Subset size                              : 817
+  Full-dataset hallucination rate (existing): 0.8972 (89.72%)
+  Subset hallucination rate (existing)      : 0.8972 (89.72%)
+  Subset hallucination rate (LLM judged)     : 0.8005 (80.05%)
+
+truthfulqa_llama3.1_8b.csv
+--------------------------
+  Total rows                              : 817
+  Subset size                              : 817
+  Full-dataset hallucination rate (existing): 0.8739 (87.39%)
+  Subset hallucination rate (existing)      : 0.8739 (87.39%)
+  Subset hallucination rate (LLM judged)     : 0.7785 (77.85%)
+
+truthfulqa_opt_6.7b.csv
+-----------------------
+  Total rows                              : 817
+  Subset size                              : 817
+  Full-dataset hallucination rate (existing): 0.9461 (94.61%)
+  Subset hallucination rate (existing)      : 0.9461 (94.61%)
+  Subset hallucination rate (LLM judged)     : 0.8054 (80.54%)
+
+truthfulqa_qwen2.5_7b.csv
+-------------------------
+  Total rows                              : 817
+  Subset size                              : 817
+  Full-dataset hallucination rate (existing): 0.9486 (94.86%)
+  Subset hallucination rate (existing)      : 0.9486 (94.86%)
+  Subset hallucination rate (LLM judged)     : 0.7405 (74.05%)

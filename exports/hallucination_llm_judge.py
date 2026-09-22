@@ -27,6 +27,7 @@ import csv
 import glob
 import os
 import random
+import subprocess
 import sys
 import threading
 import time
@@ -53,6 +54,7 @@ NEW_COLUMN = "llm_hallucination_label"
 
 EXPORTS_DIR = os.path.dirname(os.path.abspath(__file__))
 REPORT_PATH = os.path.join(EXPORTS_DIR, "hallucination_rate_report.txt")
+REPO_DIR = os.path.dirname(EXPORTS_DIR)
 
 # Every sampled subset row is also written here, one CSV per source file,
 # containing only the sampled rows plus the LLM's judgment column - so the
@@ -379,6 +381,37 @@ def count_remaining(csv_path):
     return n_subset, already_done
 
 
+def push_to_github():
+    """Commit and push the whole repo (git@github.com:gufranSabri/temp.git)
+    so the run's outputs are available remotely once this script finishes."""
+    def run(*args):
+        return subprocess.run(
+            ["git", *args], cwd=REPO_DIR, capture_output=True, text=True
+        )
+
+    run("add", "-A")
+    diff = run("diff", "--cached", "--quiet")
+    if diff.returncode == 0:
+        print("Nothing new to push.")
+        return
+
+    commit = run(
+        "commit", "-m",
+        "Add hallucination judge run outputs\n\n"
+        "Co-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>",
+    )
+    if commit.returncode != 0:
+        print(f"WARNING: git commit failed: {commit.stderr}", file=sys.stderr)
+        return
+
+    push = run("push", "-u", "origin", "main")
+    if push.returncode != 0:
+        print(f"WARNING: git push failed: {push.stderr}", file=sys.stderr)
+        return
+
+    print("Pushed run outputs to origin/main.")
+
+
 def main():
     csv_paths = sorted(glob.glob(os.path.join(EXPORTS_DIR, "*.csv")))
     if not csv_paths:
@@ -414,6 +447,8 @@ def main():
 
     print("\n" + report_text)
     print(f"Report written to: {REPORT_PATH}")
+
+    push_to_github()
 
 
 if __name__ == "__main__":
